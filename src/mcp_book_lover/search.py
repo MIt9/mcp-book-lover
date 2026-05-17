@@ -173,23 +173,80 @@ async def _search_flibusta(client: httpx.AsyncClient, query: str) -> list[Search
         html = await _fetch(client, url)
         if not html:
             continue
+        # Only parse the main content, not sidebar
+        sidebar_idx = html.find('id="sidebar')
+        if sidebar_idx > 0:
+            html = html[:sidebar_idx]
         results = []
-        for m in re.finditer(r'<a href="(/b/[^"]+)"[^>]*>([^<]+)</a>', html):
-            title = _decode_html(m.group(2))
+        # Flibusta wraps matches in <span> inside <a>, so strip tags from link text
+        for m in re.finditer(r'<a href="(/b/\d+)"[^>]*>(.*?)</a>', html):
+            href = m.group(1)
+            raw_title = _strip_tags(m.group(2))
+            title = _decode_html(raw_title).strip()
             if not _is_valid_title(title):
                 continue
-            snippet = html[m.start():m.start() + 400]
-            author_m = re.search(r'<a href="/a/[^"]+"[^>]*>([^<]+)</a>', snippet)
+            # Skip non-book links like (читать), (fb2), (epub)
+            if title.startswith('(') and title.endswith(')'):
+                continue
+            snippet = html[m.end():m.end() + 200]
+            author_m = re.search(r'<a href="/a/[^"]+"[^>]*>(.*?)</a>', snippet)
+            author = _strip_tags(_decode_html(author_m.group(1))) if author_m else "Unknown"
             results.append(SearchResult(
                 title=title,
-                author=_decode_html(author_m.group(1)) if author_m else "Unknown",
+                author=author,
                 source="Flibusta",
+                url=f"{base}{href}",
             ))
             if len(results) >= 12:
                 break
         if results:
             return results
     return []
+
+
+async def _search_searchfloor(client: httpx.AsyncClient, query: str) -> list[SearchResult]:
+    url = f"https://searchfloor.org/search?q={quote(query)}"
+    html = await _fetch(client, url)
+    if not html:
+        return []
+    results = []
+    for m in re.finditer(r'<a[^>]*href="/b/(\d+)"[^>]*>([^<]+)</a>', html):
+        title = _decode_html(m.group(2))
+        if not _is_valid_title(title):
+            continue
+        # Look for author nearby
+        snippet = html[m.start():m.start() + 500]
+        author_m = re.search(r'<a[^>]*href="/a/[^"]*"[^>]*>([^<]+)</a>', snippet)
+        results.append(SearchResult(
+            title=title,
+            author=_decode_html(author_m.group(1)) if author_m else "Unknown",
+            source="Searchfloor",
+            url=f"https://searchfloor.org/book/{m.group(1)}",
+        ))
+        if len(results) >= 15:
+            break
+    return results
+
+
+async def search_searchfloor_by_author(author: str) -> list[SearchResult]:
+    """Search searchfloor.org by author page — returns all books."""
+    url = f"https://searchfloor.org/a/{quote(author)}"
+    async with httpx.AsyncClient() as client:
+        html = await _fetch(client, url)
+    if not html:
+        return []
+    results = []
+    for m in re.finditer(r'<a[^>]*href="/b/(\d+)"[^>]*>([^<]+)</a>', html):
+        title = _decode_html(m.group(2))
+        if not _is_valid_title(title):
+            continue
+        results.append(SearchResult(
+            title=title,
+            author=author,
+            source="Searchfloor",
+            url=f"https://searchfloor.org/book/{m.group(1)}",
+        ))
+    return results
 
 
 async def _search_gutenberg(client: httpx.AsyncClient, query: str) -> list[SearchResult]:
@@ -243,16 +300,22 @@ def _parse_wordpress(html: str, source: str) -> list[SearchResult]:
 def _parse_author_today(html: str) -> list[SearchResult]:
     results = []
     soup = BeautifulSoup(html, "html.parser")
-    # Try work cards
-    for card in soup.select(".book-row, .work-row, [class*='work-card'], [class*='book-card']"):
-        title_el = card.select_one("a[class*='title'], .book-title a, h4 a, h3 a")
-        author_el = card.select_one("a[class*='author'], .book-author a")
-        if not title_el:
+    # Find book titles in search results
+    for title_div in soup.select(".book-title"):
+        a = title_div.find("a")
+        if not a:
             continue
-        title = title_el.get_text(strip=True)
-        author = author_el.get_text(strip=True) if author_el else "Unknown"
-        if _is_valid_title(title):
-            results.append(SearchResult(title=title, author=author, source="Author.Today"))
+        title = a.get_text(strip=True)
+        if not _is_valid_title(title):
+            continue
+        # Find author in parent container
+        parent = title_div.find_parent(class_=re.compile(r"book-row|book-card"))
+        author = "Unknown"
+        if parent:
+            author_el = parent.select_one(".book-author a, a[href*='/u/']")
+            if author_el:
+                author = author_el.get_text(strip=True)
+        results.append(SearchResult(title=title, author=author, source="Author.Today"))
         if len(results) >= 15:
             break
     # Fallback: anchors with /work/ in href
@@ -301,6 +364,7 @@ SOURCES = [
     SourceInfo("open_library", "Open Library", {"uk", "ru", "en"}, _search_open_library),
     SourceInfo("author_today", "Author.Today", {"uk", "ru"}, _search_author_today),
     SourceInfo("knigogo", "Knigogo", {"uk", "ru"}, _search_knigogo),
+    SourceInfo("searchfloor", "Searchfloor", {"uk", "ru"}, _search_searchfloor),
     SourceInfo("libgen", "LibGen", {"uk", "ru", "en"}, _search_libgen),
     SourceInfo("flibusta", "Flibusta", {"ru"}, _search_flibusta),
     SourceInfo("gutenberg", "Project Gutenberg", {"en"}, _search_gutenberg),

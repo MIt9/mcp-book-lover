@@ -17,7 +17,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp_book_lover import db
 from mcp_book_lover.convert import convert_book_file
 from mcp_book_lover.recommendations import get_recommendations_for_book
-from mcp_book_lover.search import search_all, get_available_sources
+from mcp_book_lover.search import search_all, get_available_sources, search_searchfloor_by_author
 
 mcp = FastMCP("book-lover", instructions="Personal book library: track reading, write reviews, get recommendations, convert formats.")
 
@@ -510,6 +510,85 @@ def bl_find_download(query: str) -> str:
         lines.append(f"  • {r.title} — {r.author} [{r.source}]")
     lines.append("\nNote: Use the source websites to download. LibGen: libgen.is | Flibusta: flibusta.site")
     return "\n".join(lines)
+
+
+@mcp.tool()
+def bl_download_book(query: str, author: str = "", save_dir: str = "") -> str:
+    """Download a book from searchfloor.org. Searches by title (and optionally author), then downloads the zip file.
+    
+    Args:
+        query: Book title to search for
+        author: Author name (if provided, searches author's page for exact match)
+        save_dir: Directory to save the file (default: ~/Books)
+    """
+    import os
+    import httpx
+
+    if not save_dir:
+        save_dir = os.path.expanduser("~/Books")
+    os.makedirs(save_dir, exist_ok=True)
+
+    # Find the book
+    if author:
+        results = _run_async(search_searchfloor_by_author(author))
+    else:
+        results = _run_async(search_all(query, source_ids=["searchfloor"]))
+
+    if not results:
+        return f"❌ No books found on Searchfloor for '{query}'"
+
+    # Find best match
+    query_lower = query.lower()
+    match = None
+    for r in results:
+        if query_lower in r.title.lower() or r.title.lower() in query_lower:
+            match = r
+            break
+    if not match:
+        match = results[0]
+        titles = "\n".join(f"  • {r.title} — {r.url}" for r in results[:10])
+        return f"❌ No exact match for '{query}'. Found:\n{titles}"
+
+    # Download
+    download_url = match.url  # https://searchfloor.org/book/{id}
+    if not download_url:
+        return f"❌ No download URL for '{match.title}'"
+
+    try:
+        with httpx.Client(follow_redirects=True, timeout=60.0) as client:
+            r = client.get(download_url, headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+            })
+            if r.status_code != 200:
+                return f"❌ Download failed: HTTP {r.status_code}"
+            if len(r.content) == 0:
+                return f"❌ Download returned empty file (may require auth). URL: {download_url}"
+
+            # Determine filename
+            cd = r.headers.get("content-disposition", "")
+            import re as _re
+            from urllib.parse import unquote
+            # RFC 5987: filename*=UTF-8''encoded_name
+            fname_m = _re.search(r"filename\*=UTF-8''(.+?)(?:;|$)", cd, _re.IGNORECASE)
+            if fname_m:
+                filename = unquote(fname_m.group(1).strip())
+            else:
+                fname_m = _re.search(r'filename="?([^";\n]+)"?', cd)
+                if fname_m:
+                    filename = fname_m.group(1).strip()
+                else:
+                    ext = ".zip" if "zip" in r.headers.get("content-type", "") else ".fb2"
+                    safe_title = _re.sub(r'[^\w\s\-.]', '', match.title)[:80]
+                    filename = f"{safe_title}{ext}"
+
+            filepath = os.path.join(save_dir, filename)
+            with open(filepath, "wb") as f:
+                f.write(r.content)
+
+            size_kb = len(r.content) // 1024
+            return f"✅ Downloaded: {match.title}\n📁 {filepath} ({size_kb} KB)"
+    except Exception as e:
+        return f"❌ Download error: {e}"
 
 
 @mcp.tool()
