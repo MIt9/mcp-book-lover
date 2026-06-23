@@ -19,7 +19,33 @@ from mcp_book_lover.convert import convert_book_file
 from mcp_book_lover.recommendations import get_recommendations_for_book
 from mcp_book_lover.search import search_all, get_available_sources, search_searchfloor_by_author
 
-mcp = FastMCP("book-lover", instructions="Personal book library: track reading, write reviews, get recommendations, convert formats.")
+mcp = FastMCP("book-lover", instructions="""Personal book library assistant. Use these tools to help the user manage their reading life.
+
+LIBRARY WORKFLOW:
+- Add books with bl_add_book (set status: want_to_read → downloaded → reading → finished)
+- Use bl_find_in_library to search before adding — avoid duplicates
+- When finishing a book, call bl_update_book_status with status="finished", then prompt for a review via bl_review_book
+- For series books, always set series + series_order fields
+
+RECOMMENDATIONS:
+- bl_suggest_next uses ratings and series reviews to score unread books — prefer it over generic lists
+- bl_review_series is more useful than bl_review_book for scoring series (used by bl_suggest_next)
+- Save interesting titles from searches with bl_save_recommendation, then bl_delete_recommendation after adding to library
+
+SEARCH & DOWNLOAD:
+- bl_search_books auto-selects sources by script: Cyrillic → uk/ru sources, Latin → en sources
+- bl_find_download shows links (LibGen, Flibusta); bl_download_book actually downloads from searchfloor.org to ~/Books
+- After downloading, update the book record with file_path via bl_add_book or note it in description
+
+FORMAT CONVERSION:
+- bl_convert_book preserves: chapters, bold/italic, inline images, cover, metadata
+- Supported paths: epub↔fb2, fb2/epub/txt/pdf → pdf, any → txt
+- PDF output requires a system Unicode font (Arial on macOS, DejaVu on Linux) for Cyrillic
+
+STATS & GOALS:
+- bl_set_goal sets a yearly reading target; bl_goal_progress shows progress bar
+- bl_reading_stats gives top authors/genres useful for making recommendations
+""")
 
 
 @mcp.tool()

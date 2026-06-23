@@ -9,6 +9,7 @@ dependencies = [
     "ebooklib>=0.18",
     "pypdf>=4.0.0",
     "beautifulsoup4>=4.12.0",
+    "fpdf2>=2.7.0",
 ]
 
 [build-system]

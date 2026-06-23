@@ -1,16 +1,17 @@
-# MCP Book Lover 📚
+# MCP Book Lover
 
 An MCP server for managing your personal book library. Track what you read, write reviews, get recommendations, search across multiple sources, and convert between formats — all from your AI assistant.
 
 ## Features
 
 - **Book tracking** — manage your library with statuses: want to read → downloaded → reading → finished
-- **Series support** — track progress through book series with ordering
+- **Series support** — track progress through book series with ordering and series-level reviews
 - **Library search** — find books in your library by title, author, series, or description
-- **Reviews & quotes** — rate books and series, write reviews, save favorite quotes
-- **Recommendations** — get personalized suggestions based on series reviews, save recommendations for later
-- **Multi-source search** — search online across 7 sources (Google Books, Open Library, Author.Today, Knigogo, LibGen, Flibusta, Project Gutenberg)
-- **Format conversion** — convert between epub, fb2, and txt (pdf read-only)
+- **Reviews & quotes** — rate books and series (1–5), write reviews, save favourite quotes
+- **Recommendations** — personalized suggestions based on your ratings and series reviews; save recommendations for later
+- **Multi-source search** — search online across 8 sources (Google Books, Open Library, Author.Today, Knigogo, Searchfloor, LibGen, Flibusta, Project Gutenberg)
+- **Download** — download books directly from searchfloor.org to `~/Books`
+- **Format conversion** — convert between epub, fb2, txt, pdf with full preservation of chapters, bold/italic, inline images, cover and metadata
 - **Reading stats** — yearly progress, top authors/genres, average rating
 - **Reading challenge** — set yearly goals and track progress
 - **Import/Export** — bulk import from text, export to JSON/CSV/Markdown
@@ -55,7 +56,7 @@ Add to your MCP client config (Claude Desktop, Kiro, etc.):
 | `bl_delete_book` | Delete a book with all its reviews and quotes |
 | `bl_list_series` | List all series with progress |
 | `bl_series_books` | Show books in a series with order and status |
-| `bl_review_book` | Write a review + rating (1-5) |
+| `bl_review_book` | Write a review + rating (1–5) |
 | `bl_get_reviews` | View reviews for a book |
 | `bl_review_series` | Write a review for a book series |
 | `bl_get_series_reviews` | View series reviews |
@@ -64,11 +65,12 @@ Add to your MCP client config (Claude Desktop, Kiro, etc.):
 | `bl_delete_recommendation` | Remove a recommendation from the list |
 | `bl_add_quote` | Save a quote from a book |
 | `bl_list_quotes` | View saved quotes |
-| `bl_get_recommendations` | Get recommendations by author/genre |
-| `bl_search_books` | Search online across 7 sources (Google Books, Open Library, etc.) |
-| `bl_suggest_next` | What to read next (personalized) |
-| `bl_find_download` | Find download sources for a book |
-| `bl_convert_book` | Convert book file (epub, fb2, txt) |
+| `bl_get_recommendations` | Get recommendations by author/genre via Open Library |
+| `bl_search_books` | Search online across 8 sources |
+| `bl_suggest_next` | What to read next (scored by ratings, series reviews, fav authors/genres) |
+| `bl_find_download` | Find download links (LibGen, Flibusta) |
+| `bl_download_book` | Download a book from searchfloor.org to ~/Books |
+| `bl_convert_book` | Convert book file — preserves chapters, formatting, images |
 | `bl_reading_stats` | Reading statistics |
 | `bl_set_goal` | Set a yearly reading challenge |
 | `bl_goal_progress` | Check reading challenge progress |
@@ -84,6 +86,19 @@ Add to your MCP client config (Claude Desktop, Kiro, etc.):
 | `reading` | Currently reading/listening |
 | `finished` | Done |
 
+## Format Conversion
+
+All conversions preserve chapter structure, metadata (title, author, language), cover image, bold/italic text, and inline images.
+
+| From \ To | epub | fb2 | pdf | txt |
+|-----------|------|-----|-----|-----|
+| **fb2**   | ✅   | —   | ✅  | ✅  |
+| **epub**  | —    | ✅  | ✅  | ✅  |
+| **txt**   | ✅   | ✅  | ✅  | —   |
+| **pdf**   | ✅   | ✅  | —   | ✅  |
+
+PDF output uses a system Unicode font (Arial on macOS, DejaVu on Linux) for Cyrillic support.
+
 ## Search Sources
 
 Sources are auto-selected based on query language (Cyrillic → uk/ru sources, Latin → en sources):
@@ -94,18 +109,20 @@ Sources are auto-selected based on query language (Cyrillic → uk/ru sources, L
 | Open Library | en, uk, ru | API |
 | Author.Today | uk, ru | Scraping |
 | Knigogo | uk, ru | Scraping |
+| Searchfloor | uk, ru | Scraping + download |
 | LibGen | en, uk, ru | Scraping |
 | Flibusta | ru | Scraping |
 | Project Gutenberg | en | Scraping |
 
 ## Storage
 
-SQLite database stored at `~/.mcp-book-lover/books.db`
+SQLite database at `~/.mcp-book-lover/books.db`. Downloaded books go to `~/Books` by default.
 
 ## Requirements
 
 - Python ≥ 3.10
 - No external services or API keys required
+- System Unicode font (Arial/DejaVu) for PDF output with Cyrillic
 
 ## License
 
