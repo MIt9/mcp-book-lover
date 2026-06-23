@@ -18,40 +18,47 @@ An MCP server for managing your personal book library. Track what you read, writ
 
 ## Installation
 
-With [uv](https://docs.astral.sh/uv/) (recommended — manages Python version automatically):
+No installation needed if you use `uvx` — it fetches the package automatically.
 
-```bash
-uv sync
-```
-
-Or manually (requires Python 3.11+):
+Or install manually (requires Python 3.11+):
 
 ```bash
 python3.11 -m venv .venv
 source .venv/bin/activate
-pip install -e .
+pip install mcp-book-lover
 ```
 
-## MCP Client Configuration
+## Connecting to MCP clients
 
-**With uv (recommended):**
+### Claude Code
+
+```bash
+claude mcp add book-lover uvx mcp-book-lover
+```
+
+To make it available in all projects, add to `~/.claude/mcp.json`:
+
 ```json
 {
   "mcpServers": {
     "book-lover": {
-      "command": "uv",
-      "args": ["--directory", "/path/to/mcp-book-lover", "run", "mcp-book-lover"]
+      "command": "uvx",
+      "args": ["mcp-book-lover"]
     }
   }
 }
 ```
 
-**With a manual venv:**
+### Claude Desktop / Kiro / Cursor
+
+Add to the MCP config file of your client:
+
 ```json
 {
   "mcpServers": {
     "book-lover": {
-      "command": "/path/to/mcp-book-lover/.venv/bin/mcp-book-lover"
+      "command": "uvx",
+      "args": ["mcp-book-lover"]
     }
   }
 }
@@ -59,7 +66,13 @@ pip install -e .
 
 ## Development
 
-Test the server interactively with the MCP inspector:
+```bash
+git clone https://github.com/MIt9/mcp-book-lover
+cd mcp-book-lover
+uv sync
+```
+
+Test interactively with the MCP inspector:
 
 ```bash
 mcp dev src/mcp_book_lover/server.py
