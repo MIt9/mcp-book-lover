@@ -18,31 +18,51 @@ An MCP server for managing your personal book library. Track what you read, writ
 
 ## Installation
 
+With [uv](https://docs.astral.sh/uv/) (recommended — manages Python version automatically):
+
+```bash
+uv sync
+```
+
+Or manually (requires Python 3.11+):
+
 ```bash
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -e .
 ```
 
-## Usage
-
-```bash
-mcp-book-lover
-```
-
 ## MCP Client Configuration
 
-Add to your MCP client config (Claude Desktop, Kiro, etc.):
-
+**With uv (recommended):**
 ```json
 {
   "mcpServers": {
     "book-lover": {
-      "command": "/path/to/mcp-book-lover/.venv/bin/python3.11",
-      "args": ["-m", "mcp_book_lover.server"]
+      "command": "uv",
+      "args": ["--directory", "/path/to/mcp-book-lover", "run", "mcp-book-lover"]
     }
   }
 }
+```
+
+**With a manual venv:**
+```json
+{
+  "mcpServers": {
+    "book-lover": {
+      "command": "/path/to/mcp-book-lover/.venv/bin/mcp-book-lover"
+    }
+  }
+}
+```
+
+## Development
+
+Test the server interactively with the MCP inspector:
+
+```bash
+mcp dev src/mcp_book_lover/server.py
 ```
 
 ## Tools
