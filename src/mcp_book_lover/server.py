@@ -15,9 +15,9 @@ def _run_async(coro):
         return pool.submit(asyncio.run, coro).result()
 from mcp.server.fastmcp import FastMCP
 from mcp_book_lover import db
-from mcp_book_lover.convert import convert_book_file
+from mcp_book_lover.convert import convert_book_file, convert_batch_dir
 from mcp_book_lover.recommendations import get_recommendations_for_book
-from mcp_book_lover.search import search_all, get_available_sources, search_searchfloor_by_author
+from mcp_book_lover.search import search_all, get_available_sources, search_searchfloor_by_author, group_by_series
 
 mcp = FastMCP("book-lover", instructions="""Personal book library assistant. Use these tools to help the user manage their reading life.
 
@@ -34,12 +34,15 @@ RECOMMENDATIONS:
 
 SEARCH & DOWNLOAD:
 - bl_search_books auto-selects sources by script: Cyrillic → uk/ru sources, Latin → en sources
-- bl_find_download shows links (LibGen, Flibusta); bl_download_book actually downloads from searchfloor.org to ~/Books
+- bl_search_series groups numbered cycle/parts (e.g. "Брутфорс 1..6") into one result — prefer it for finding a whole series
+- bl_find_download shows links (LibGen, Flibusta); bl_download_book downloads a single book from searchfloor.org
+- bl_download_series downloads ALL parts of a cycle in one call
 - After downloading, update the book record with file_path via bl_add_book or note it in description
 
 FORMAT CONVERSION:
 - bl_convert_book preserves: chapters, bold/italic, inline images, cover, metadata
-- Supported paths: epub↔fb2, fb2/epub/txt/pdf → pdf, any → txt
+- bl_convert_batch converts a whole directory (e.g. a downloaded cycle) at once
+- Supported paths: epub↔fb2, fb2/epub/txt/pdf → pdf, any → txt; zipped books (.fb2.zip/.epub.zip) are auto-extracted
 - PDF output requires a system Unicode font (Arial on macOS, DejaVu on Linux) for Cyrillic
 
 STATS & GOALS:
@@ -237,6 +240,38 @@ def bl_search_books(query: str, sources: str = "") -> str:
 
 
 @mcp.tool()
+def bl_search_series(query: str, sources: str = "") -> str:
+    """Search for ALL books of a cycle/series at once. Groups numbered parts into one result.
+
+    Args:
+        query: Search query (series name, title, or author)
+        sources: Comma-separated source IDs to search (optional). Available: google_books, open_library, author_today, knigogo, libgen, flibusta, gutenberg, searchfloor
+    """
+    source_ids = [s.strip() for s in sources.split(",") if s.strip()] if sources else None
+    results = _run_async(search_all(query, source_ids=source_ids))
+    if not results:
+        return "No results found."
+
+    groups = group_by_series(results)
+    if groups:
+        lines = [f"Found {len(results)} results, {len(groups)} numbered series:"]
+        for g in groups:
+            parts = " | ".join(f"#{p['num']} {p['result'].title} [{p['result'].source}]" for p in g["parts"])
+            authors = ", ".join(sorted({p["result"].author for p in g["parts"]}))
+            lines.append(f"📚 {g['series']} — {authors}\n  {parts}")
+        return "\n".join(lines)
+
+    lines = [f"Found {len(results)} results:"]
+    for r in results[:20]:
+        src = f"[{r.source}]"
+        year = f" ({r.year})" if r.year else ""
+        lines.append(f"  • {r.title} — {r.author}{year} {src}")
+    if len(results) > 20:
+        lines.append(f"  ... and {len(results) - 20} more")
+    return "\n".join(lines)
+
+
+@mcp.tool()
 def bl_list_series() -> str:
     """List all book series in your library with progress."""
     series = db.list_series()
@@ -300,6 +335,31 @@ def bl_convert_book(input_path: str, output_format: str) -> str:
         return f"Converted successfully: {output_path}"
     except Exception as e:
         return f"Conversion error: {e}"
+
+
+@mcp.tool()
+def bl_convert_batch(src_path: str, output_format: str, extensions: str = "epub,fb2,txt,pdf", recursive: bool = True) -> str:
+    """Convert all book files in a directory to one target format. Useful for book cycles/series.
+    
+    Args:
+        src_path: Directory containing book files
+        output_format: Target format — epub, fb2, txt, or pdf
+        extensions: Comma-separated source extensions to convert (default: epub,fb2,txt,pdf)
+        recursive: Whether to scan subdirectories (default: True)
+    """
+    try:
+        converted, errors = convert_batch_dir(src_path, output_format, extensions, recursive)
+    except Exception as e:
+        return f"Batch conversion error: {e}"
+
+    lines = [f"✅ Converted {len(converted)} file(s) to {output_format}:"]
+    for p in converted:
+        lines.append(f"  {p}")
+    if errors:
+        lines.append(f"⚠️ {len(errors)} failed:")
+        for e in errors:
+            lines.append(f"  {e}")
+    return "\n".join(lines)
 
 
 @mcp.tool()
@@ -538,44 +598,11 @@ def bl_find_download(query: str) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
-def bl_download_book(query: str, author: str = "", save_dir: str = "") -> str:
-    """Download a book from searchfloor.org. Searches by title (and optionally author), then downloads the zip file.
-    
-    Args:
-        query: Book title to search for
-        author: Author name (if provided, searches author's page for exact match)
-        save_dir: Directory to save the file (default: ~/Books)
-    """
+def _download_result(match, save_dir: str) -> str:
+    """Download a SearchResult from searchfloor.org into save_dir. Returns message."""
     import os
     import httpx
 
-    if not save_dir:
-        save_dir = os.path.expanduser("~/Books")
-    os.makedirs(save_dir, exist_ok=True)
-
-    # Find the book
-    if author:
-        results = _run_async(search_searchfloor_by_author(author))
-    else:
-        results = _run_async(search_all(query, source_ids=["searchfloor"]))
-
-    if not results:
-        return f"❌ No books found on Searchfloor for '{query}'"
-
-    # Find best match
-    query_lower = query.lower()
-    match = None
-    for r in results:
-        if query_lower in r.title.lower() or r.title.lower() in query_lower:
-            match = r
-            break
-    if not match:
-        match = results[0]
-        titles = "\n".join(f"  • {r.title} — {r.url}" for r in results[:10])
-        return f"❌ No exact match for '{query}'. Found:\n{titles}"
-
-    # Download
     download_url = match.url  # https://searchfloor.org/book/{id}
     if not download_url:
         return f"❌ No download URL for '{match.title}'"
@@ -615,6 +642,88 @@ def bl_download_book(query: str, author: str = "", save_dir: str = "") -> str:
             return f"✅ Downloaded: {match.title}\n📁 {filepath} ({size_kb} KB)"
     except Exception as e:
         return f"❌ Download error: {e}"
+
+
+@mcp.tool()
+def bl_download_book(query: str, author: str = "", save_dir: str = "") -> str:
+    """Download a book from searchfloor.org. Searches by title (and optionally author), then downloads the zip file.
+    
+    Args:
+        query: Book title to search for
+        author: Author name (if provided, searches author's page for exact match)
+        save_dir: Directory to save the file (default: ~/Books)
+    """
+    import os
+
+    if not save_dir:
+        save_dir = os.path.expanduser("~/Books")
+    os.makedirs(save_dir, exist_ok=True)
+
+    # Find the book
+    if author:
+        results = _run_async(search_searchfloor_by_author(author))
+    else:
+        results = _run_async(search_all(query, source_ids=["searchfloor"]))
+
+    if not results:
+        return f"❌ No books found on Searchfloor for '{query}'"
+
+    # Find best match
+    query_lower = query.lower()
+    match = None
+    for r in results:
+        if query_lower in r.title.lower() or r.title.lower() in query_lower:
+            match = r
+            break
+    if not match:
+        match = results[0]
+        titles = "\n".join(f"  • {r.title} — {r.url}" for r in results[:10])
+        return f"❌ No exact match for '{query}'. Found:\n{titles}"
+
+    return _download_result(match, save_dir)
+
+
+@mcp.tool()
+def bl_download_series(query: str, author: str = "", save_dir: str = "") -> str:
+    """Download ALL books of a cycle/series from searchfloor.org in one call.
+
+    Args:
+        query: Series name to match (e.g. "Брутфорс")
+        author: Author name (optional, restricts search to author's page)
+        save_dir: Directory to save files (default: ~/Books)
+    """
+    import os
+
+    if not save_dir:
+        save_dir = os.path.expanduser("~/Books")
+    os.makedirs(save_dir, exist_ok=True)
+
+    if author:
+        results = _run_async(search_searchfloor_by_author(author))
+    else:
+        results = _run_async(search_all(query, source_ids=["searchfloor"]))
+
+    if not results:
+        return f"❌ No books found on Searchfloor for '{query}'"
+
+    # Group into series cycles; prefer groups matching the query
+    groups = group_by_series(results)
+    query_lower = query.lower()
+    groups = [g for g in groups if query_lower in _normalize(g["series"])] or groups
+
+    if not groups:
+        return f"❌ No numbered series found matching '{query}'."
+
+    messages = [f"📚 Series: {groups[0]['series']} — {groups[0]['author']}"]
+    for part in groups[0]["parts"]:
+        messages.append(_download_result(part["result"], save_dir))
+
+    return "\n".join(messages)
+
+
+def _normalize(text: str) -> str:
+    import re
+    return re.sub(r"\s+", " ", text.lower()).strip()
 
 
 @mcp.tool()

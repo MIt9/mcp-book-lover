@@ -67,6 +67,31 @@ class _RichBook:
 # Public API
 # ---------------------------------------------------------------------------
 
+def _extract_zip(src: Path) -> Path:
+    """Extract a zipped book (.fb2.zip / .epub.zip) to a temp file.
+
+    Returns the path to the inner book file (or the original if not a zip).
+    """
+    if src.suffix.lower() != ".zip":
+        return src
+    import tempfile
+    import zipfile
+
+    with zipfile.ZipFile(src) as zf:
+        candidates = [n for n in zf.namelist() if not n.endswith("/")]
+        book_files = [n for n in candidates if n.lower().endswith((".fb2", ".epub", ".txt", ".pdf"))]
+        if not book_files:
+            raise ValueError(f"Cannot read format: zip (no book file inside: {src.name})")
+        if len(book_files) > 1:
+            book_files = [n for n in book_files if n.lower().endswith((".fb2", ".epub"))]
+        inner = book_files[0]
+        suffix = Path(inner).suffix or ".fb2"
+        tmp = Path(tempfile.mkdtemp(prefix="mcp_book_")) / f"{src.stem}{suffix}"
+        with zf.open(inner) as f_in, open(tmp, "wb") as f_out:
+            f_out.write(f_in.read())
+        return tmp
+
+
 def convert_book_file(input_path: str, output_format: str) -> str:
     """Convert book file to target format. Returns output file path."""
     src = Path(input_path)
@@ -74,12 +99,19 @@ def convert_book_file(input_path: str, output_format: str) -> str:
         raise FileNotFoundError(f"File not found: {input_path}")
 
     src_fmt = src.suffix.lstrip(".").lower()
+    is_zip = src_fmt == "zip"
     if src_fmt == output_format:
         raise ValueError(f"Source is already in {output_format} format.")
 
-    dest = src.with_suffix(f".{output_format}")
+    parse_src = _extract_zip(src)
+    src_fmt = parse_src.suffix.lstrip(".").lower()
 
-    book = _parse_book(src, src_fmt)
+    dest = src.with_suffix(f".{output_format}")
+    if is_zip:
+        # Strip double extension: "book.fb2.zip" → "book.epub"
+        dest = src.with_suffix("").with_suffix(f".{output_format}")
+
+    book = _parse_book(parse_src, src_fmt)
 
     if output_format == "epub":
         _write_epub(book, dest)
@@ -93,6 +125,44 @@ def convert_book_file(input_path: str, output_format: str) -> str:
         raise ValueError(f"Unsupported output format: {output_format}")
 
     return str(dest)
+
+
+def convert_batch_dir(
+    src_path: str, output_format: str, extensions: str = "epub,fb2,txt,pdf", recursive: bool = True
+) -> tuple[list[str], list[str]]:
+    """Convert all books in a directory to the target format.
+
+    Returns (converted_paths, error_messages).
+    """
+    base = Path(src_path)
+    if not base.is_dir():
+        raise NotADirectoryError(f"Not a directory: {src_path}")
+
+    supported = {"epub", "fb2", "txt", "pdf"}
+    if output_format not in supported:
+        raise ValueError(f"Unsupported output format: {output_format}")
+
+    exts = {e.lstrip(".").lower() for e in extensions.split(",") if e.strip()}
+    exts.add("zip")
+    pattern = "**/*" if recursive else "*"
+
+    done: list[str] = []
+    errors: list[str] = []
+    for src in sorted(base.glob(pattern)):
+        if not src.is_file():
+            continue
+        src_fmt = src.suffix.lstrip(".").lower()
+        if src_fmt not in exts:
+            continue
+        try:
+            parse_src = _extract_zip(src)
+            if parse_src.suffix.lstrip(".").lower() == output_format:
+                continue
+            done.append(convert_book_file(str(src), output_format))
+        except Exception as e:
+            errors.append(f"{src.name}: {e}")
+
+    return done, errors
 
 
 # ---------------------------------------------------------------------------

@@ -353,6 +353,65 @@ def _normalize(text: str) -> str:
     return re.sub(r'\s+', ' ', text.lower()).strip()
 
 
+def extract_series(title: str) -> tuple[str, int | None]:
+    """Extract (series_base, part_number) from a title.
+
+    Handles patterns like:
+    - 'Брутфорс 1', 'Брутфорс1' → ('Брутфорс', 1)
+    - 'Книга 2. Название', 'Том 3 Название' → ('Название', 2/3)
+    - 'Название. Том 4', 'Название ч. 5' → ('Название', 4/5)
+    Returns (title, None) if no part number found.
+    """
+    t = title.strip()
+    # Leading marker: 'Книга 2. Название', 'Том 3: Название', 'Часть 1 — Название'
+    m = re.match(r'^(?:книга|том|часть|ч)\s*\.?\s*(\d+)\s*[.:\-–—]?\s*(.+)$', t, re.I)
+    if m:
+        base = m.group(2).strip()
+        if base and not re.match(r'^\d+$', base):
+            return base, int(m.group(1))
+    # Trailing marker: 'Название. Том 4', 'Название, книга 2', 'Название ч 5'
+    m = re.search(r'^(?P<base>.+?)[\s,.;:]*(?:том|книга|часть|ч)\s*\.?\s*(?P<num>\d+)\s*$', t, re.I)
+    if m:
+        return m.group("base").strip(), int(m.group("num"))
+    # Trailing plain number: 'Брутфорс 1', 'Брутфорс1'
+    m = re.match(r'^(?P<base>.+?)\s*(?P<num>\d+)$', t)
+    if m:
+        base = m.group("base").strip()
+        if base and len(base) > 1:
+            return base, int(m.group("num"))
+    return t, None
+
+
+def group_by_series(results: list[SearchResult]) -> list[dict]:
+    """Group search results into series/cycles by part-numbered titles.
+
+    Returns list of dicts: {series, author, parts: [{num, result}], singles: [result]}.
+    """
+    series_map: dict[str, dict] = {}
+
+    def get_group(base: str, author: str) -> dict:
+        key = _normalize(base)
+        if key not in series_map:
+            series_map[key] = {"series": base, "author": author, "parts": [], "singles": []}
+        return series_map[key]
+
+    for r in results:
+        base, num = extract_series(r.title)
+        g = get_group(base, r.author)
+        if num is not None:
+            g["parts"].append({"num": num, "result": r})
+        else:
+            g["singles"].append(r)
+
+    groups = list(series_map.values())
+    # Only keep groups that actually look like a cycle (have numbered parts)
+    groups = [g for g in groups if g["parts"]]
+    groups.sort(key=lambda g: _normalize(g["series"]))
+    for g in groups:
+        g["parts"].sort(key=lambda p: p["num"])
+    return groups
+
+
 def _has_cyrillic(text: str) -> bool:
     return bool(re.search(r'[А-Яа-яІіЇїЄєҐґ]', text))
 

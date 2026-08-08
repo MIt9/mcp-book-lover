@@ -10,8 +10,9 @@ An MCP server for managing your personal book library. Track what you read, writ
 - **Reviews & quotes** — rate books and series (1–5), write reviews, save favourite quotes
 - **Recommendations** — personalized suggestions based on your ratings and series reviews; save recommendations for later
 - **Multi-source search** — search online across 8 sources (Google Books, Open Library, Author.Today, Knigogo, Searchfloor, LibGen, Flibusta, Project Gutenberg)
-- **Download** — download books directly from searchfloor.org to `~/Books`
-- **Format conversion** — convert between epub, fb2, txt, pdf with full preservation of chapters, bold/italic, inline images, cover and metadata
+- **Series/cycle search** — `bl_search_series` groups numbered parts of a cycle (e.g. "Брутфорс 1..6") into a single result
+- **Download** — download books directly from searchfloor.org to `~/Books`; `bl_download_series` grabs a whole cycle in one call
+- **Format conversion** — convert between epub, fb2, txt, pdf with full preservation of chapters, bold/italic, inline images, cover and metadata; zipped books (`.fb2.zip`) are handled automatically; `bl_convert_batch` converts an entire directory at once
 - **Reading stats** — yearly progress, top authors/genres, average rating
 - **Reading challenge** — set yearly goals and track progress
 - **Import/Export** — bulk import from text, export to JSON/CSV/Markdown
@@ -100,10 +101,13 @@ mcp dev src/mcp_book_lover/server.py
 | `bl_list_quotes` | View saved quotes |
 | `bl_get_recommendations` | Get recommendations by author/genre via Open Library |
 | `bl_search_books` | Search online across 8 sources |
+| `bl_search_series` | Find ALL books of a cycle/series — groups numbered parts (e.g. "Брутфорс 1..6") into one result |
 | `bl_suggest_next` | What to read next (scored by ratings, series reviews, fav authors/genres) |
 | `bl_find_download` | Find download links (LibGen, Flibusta) |
 | `bl_download_book` | Download a book from searchfloor.org to ~/Books |
-| `bl_convert_book` | Convert book file — preserves chapters, formatting, images |
+| `bl_download_series` | Download ALL books of a cycle/series in one call |
+| `bl_convert_book` | Convert book file — preserves chapters, formatting, images; auto-extracts `.fb2.zip`/`.epub.zip` |
+| `bl_convert_batch` | Convert every book file in a directory to one format (great for a downloaded cycle) |
 | `bl_reading_stats` | Reading statistics |
 | `bl_set_goal` | Set a yearly reading challenge |
 | `bl_goal_progress` | Check reading challenge progress |
@@ -131,6 +135,21 @@ All conversions preserve chapter structure, metadata (title, author, language), 
 | **pdf**   | ✅   | ✅  | —   | ✅  |
 
 PDF output uses a system Unicode font (Arial on macOS, DejaVu on Linux) for Cyrillic support.
+
+Zipped book files (`.fb2.zip`, `.epub.zip`) are extracted automatically before parsing, so you can convert them directly.
+
+### Typical cycle workflow
+
+```bash
+# 1. Find every book of the cycle at once
+bl_search_series("Брутфорс")
+
+# 2. Download all parts in one call
+bl_download_series("Брутфорс", author="Иван Катиш")
+
+# 3. Convert the whole directory (auto-extracts .fb2.zip)
+bl_convert_batch("~/Books", "epub")
+```
 
 ## Search Sources
 
