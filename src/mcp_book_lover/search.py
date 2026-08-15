@@ -12,7 +12,8 @@ Sources:
 
 import re
 import asyncio
-from dataclasses import dataclass, field
+import time
+from dataclasses import dataclass
 from urllib.parse import quote
 
 import httpx
@@ -25,6 +26,9 @@ HEADERS = {
 }
 
 TIMEOUT = 10.0
+
+CACHE_TTL = 600.0
+_cache: dict[tuple, tuple[float, list]] = {}
 
 
 @dataclass
@@ -369,6 +373,18 @@ def extract_series(title: str) -> tuple[str, int | None]:
         base = m.group(2).strip()
         if base and not re.match(r'^\d+$', base):
             return base, int(m.group(1))
+    # Hash/number marker: 'Наследие #1: Статус D', 'Серия №2: Название', 'Брутфорс#3'
+    m = re.match(r'^(?P<base>.+?)\s*[#№]\s*\.?\s*(?P<num>\d+)\s*[.:\-–—]?\s*(?P<sub>.*)$', t)
+    if m:
+        base = m.group("base").strip()
+        if base:
+            return base, int(m.group("num"))
+    # Base-first marker with subtitle: 'Сайберия. Книга 1: Байстрюк', 'Том 2.'
+    m = re.match(r'^(?P<base>.+?)\s*\.\s*(?:книга|том|часть|ч)\s*\.?\s*(?P<num>\d+)\s*[.:\-–—]?\s*(?P<sub>.*)$', t, re.I)
+    if m:
+        base = m.group("base").strip()
+        if base and len(base) > 1:
+            return base, int(m.group("num"))
     # Trailing marker: 'Название. Том 4', 'Название, книга 2', 'Название ч 5'
     m = re.search(r'^(?P<base>.+?)[\s,.;:]*(?:том|книга|часть|ч)\s*\.?\s*(?P<num>\d+)\s*$', t, re.I)
     if m:
@@ -439,11 +455,24 @@ def _select_sources(query: str, source_ids: list[str] | None = None) -> list[Sou
 
 
 async def search_all(query: str, source_ids: list[str] | None = None) -> list[SearchResult]:
-    """Search all relevant sources in parallel, deduplicate, rank by relevance."""
+    """Search all relevant sources in parallel, deduplicate, rank by relevance.
+
+    Per-source results are cached in-memory for CACHE_TTL seconds and each
+    source is retried once on failure (flaky scrapers).
+    """
     sources = _select_sources(query, source_ids)
 
+    async def with_cache(client, src, q):
+        key = (src.id, q.lower())
+        now = time.monotonic()
+        if key in _cache and now - _cache[key][0] < CACHE_TTL:
+            return _cache[key][1]
+        res = await _call_with_retry(client, src.search_fn, q)
+        _cache[key] = (now, res)
+        return res
+
     async with httpx.AsyncClient() as client:
-        tasks = [s.search_fn(client, query) for s in sources]
+        tasks = [with_cache(client, s, query) for s in sources]
         outcomes = await asyncio.gather(*tasks, return_exceptions=True)
 
     results = []
@@ -460,6 +489,20 @@ async def search_all(query: str, source_ids: list[str] | None = None) -> list[Se
     # Rank by relevance
     _rank_results(results, query)
     return results
+
+
+async def _call_with_retry(client: httpx.AsyncClient, fn, query: str) -> list | None:
+    """Run a source search, retrying once on transient failures."""
+    try:
+        result = await fn(client, query)
+        if result is None or isinstance(result, Exception):
+            raise RuntimeError(f"source returned {result!r}")
+        return result
+    except Exception:
+        try:
+            return await fn(client, query)
+        except Exception:
+            return None
 
 
 def _rank_results(results: list[SearchResult], query: str):

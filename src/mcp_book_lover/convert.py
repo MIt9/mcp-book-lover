@@ -434,7 +434,7 @@ def _resolve_and_store_epub_image(src: str, epub_images: dict, dest_images: dict
 
 def _parse_txt(src: Path) -> _RichBook:
     text = src.read_text(encoding="utf-8", errors="replace")
-    paras = [l.strip() for l in text.split("\n") if l.strip()]
+    paras = [p.strip() for p in text.split("\n") if p.strip()]
     title = paras[0] if paras else src.stem
     blocks = [_Block.para([_Span(p)]) for p in paras]
     return _RichBook(title=title, chapters=[_Chapter(title="", blocks=blocks)])
@@ -445,7 +445,7 @@ def _parse_pdf(src: Path) -> _RichBook:
 
     reader = PdfReader(str(src))
     text = "\n".join(page.extract_text() or "" for page in reader.pages)
-    paras = [l.strip() for l in text.split("\n") if l.strip()]
+    paras = [p.strip() for p in text.split("\n") if p.strip()]
     title = paras[0] if paras else src.stem
     blocks = [_Block.para([_Span(p)]) for p in paras]
     return _RichBook(title=title, chapters=[_Chapter(title="", blocks=blocks)])

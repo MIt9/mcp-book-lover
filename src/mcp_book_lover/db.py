@@ -86,6 +86,11 @@ def _init_tables(conn: sqlite3.Connection):
             date_added TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_books_series ON books(series);
+        CREATE INDEX IF NOT EXISTS idx_books_author ON books(author);
+        CREATE INDEX IF NOT EXISTS idx_books_status ON books(status);
+        CREATE INDEX IF NOT EXISTS idx_reviews_book ON reviews(book_id);
+        CREATE INDEX IF NOT EXISTS idx_quotes_book ON quotes(book_id);
+        CREATE INDEX IF NOT EXISTS idx_series_reviews_series ON series_reviews(series);
     """)
     # Migrate: add series columns if missing
     cols = [r[1] for r in conn.execute("PRAGMA table_info(books)").fetchall()]
@@ -99,13 +104,15 @@ def _init_tables(conn: sqlite3.Connection):
 def add_book(title: str, author: str, genre: str = "", language: str = "",
              status: str = "want_to_read", file_path: str = "",
              description: str = "", series: str = "", series_order: float = 0) -> dict:
+    now = datetime.now().isoformat()
+    date_read = now if status == "finished" else None
     conn = get_db()
     try:
         cur = conn.execute(
-            "INSERT INTO books (title, author, genre, language, status, file_path, description, series, series_order, date_added) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO books (title, author, genre, language, status, file_path, description, series, series_order, date_added, date_read) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (title, author, genre, language, status, file_path, description,
-             series, series_order, datetime.now().isoformat())
+             series, series_order, now, date_read)
         )
         conn.commit()
         book = conn.execute("SELECT * FROM books WHERE id = ?", (cur.lastrowid,)).fetchone()
@@ -149,6 +156,8 @@ def update_book(book_id: int, **fields):
     try:
         allowed = {"title", "author", "genre", "language", "status", "rating",
                    "date_read", "file_path", "description", "series", "series_order"}
+        if fields.get("status") == "finished" and not fields.get("date_read"):
+            fields = {**fields, "date_read": datetime.now().isoformat()}
         updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
         if not updates:
             return get_book(book_id)

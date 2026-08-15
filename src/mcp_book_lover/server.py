@@ -2,22 +2,24 @@
 
 import json
 import asyncio
+import concurrent.futures
+import re
+
+from mcp.server.fastmcp import FastMCP
+from mcp_book_lover import db
+from mcp_book_lover.convert import convert_book_file, convert_batch_dir
+from mcp_book_lover.recommendations import get_recommendations_for_book
+from mcp_book_lover.search import search_all, search_searchfloor_by_author, group_by_series
 
 
 def _run_async(coro):
     """Run async coroutine safely, even if an event loop is already running."""
     try:
-        loop = asyncio.get_running_loop()
+        asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(coro)
-    import concurrent.futures
     with concurrent.futures.ThreadPoolExecutor(1) as pool:
         return pool.submit(asyncio.run, coro).result()
-from mcp.server.fastmcp import FastMCP
-from mcp_book_lover import db
-from mcp_book_lover.convert import convert_book_file, convert_batch_dir
-from mcp_book_lover.recommendations import get_recommendations_for_book
-from mcp_book_lover.search import search_all, get_available_sources, search_searchfloor_by_author, group_by_series
 
 mcp = FastMCP("book-lover", instructions="""Personal book library assistant. Use these tools to help the user manage their reading life.
 
@@ -49,6 +51,17 @@ STATS & GOALS:
 - bl_set_goal sets a yearly reading target; bl_goal_progress shows progress bar
 - bl_reading_stats gives top authors/genres useful for making recommendations
 """)
+
+
+@mcp.resource("books://library", title="Library", description="All books in the library as JSON")
+def library_resource() -> str:
+    return json.dumps(db.list_books(), ensure_ascii=False, indent=2)
+
+
+@mcp.resource("books://{book_id}", title="Book", description="A single book by id as JSON")
+def book_resource(book_id: int) -> str:
+    book = db.get_book(book_id)
+    return json.dumps(book, ensure_ascii=False, indent=2) if book else "Not found"
 
 
 @mcp.tool()
@@ -144,7 +157,7 @@ def bl_review_book(book_id: int, text: str, rating: float) -> str:
     book = db.get_book(book_id)
     if not book:
         return f"Book {book_id} not found."
-    review = db.add_review(book_id, text, rating)
+    db.add_review(book_id, text, rating)
     return f"Review added for '{book['title']}': {rating}/5\n{text}"
 
 
@@ -392,7 +405,7 @@ def bl_add_quote(book_id: int, text: str, page: str = "") -> str:
     book = db.get_book(book_id)
     if not book:
         return f"Book {book_id} not found."
-    quote = db.add_quote(book_id, text, page)
+    db.add_quote(book_id, text, page)
     page_info = f" (p.{page})" if page else ""
     return f"Quote saved from '{book['title']}'{page_info}:\n\"{text}\""
 
@@ -490,7 +503,7 @@ def bl_import_list(text: str) -> str:
     Args:
         text: Multi-line text with books, one per line (format: Title — Author)
     """
-    lines = [l.strip() for l in text.strip().split("\n") if l.strip()]
+    lines = [ln.strip() for ln in text.strip().split("\n") if ln.strip()]
     books = []
     for line in lines:
         # Try splitting by — or -
@@ -524,7 +537,8 @@ def bl_export_library(format: str = "json") -> str:
         return json.dumps(books, ensure_ascii=False, indent=2)
     
     if format == "csv":
-        import csv, io
+        import csv
+        import io
         output = io.StringIO()
         writer = csv.writer(output)
         writer.writerow(["title", "author", "genre", "status", "rating", "date_added", "date_read"])
@@ -668,19 +682,29 @@ def bl_download_book(query: str, author: str = "", save_dir: str = "") -> str:
     if not results:
         return f"❌ No books found on Searchfloor for '{query}'"
 
-    # Find best match
-    query_lower = query.lower()
-    match = None
-    for r in results:
-        if query_lower in r.title.lower() or r.title.lower() in query_lower:
-            match = r
-            break
-    if not match:
-        match = results[0]
+    # Find best match: substring match first, then token-overlap scoring
+    ranked = sorted(results, key=lambda r: _score_match(r, query), reverse=True)
+    best = ranked[0]
+    if _score_match(best, query) <= 0:
         titles = "\n".join(f"  • {r.title} — {r.url}" for r in results[:10])
-        return f"❌ No exact match for '{query}'. Found:\n{titles}"
+        return f"❌ No match for '{query}'. Found:\n{titles}"
 
-    return _download_result(match, save_dir)
+    return _download_result(best, save_dir)
+
+
+def _score_match(result, query: str) -> float:
+    """Rank a SearchResult against a query: substring match + token overlap."""
+    tnorm = _normalize(result.title)
+    anorm = _normalize(result.author)
+    qnorm = _normalize(query)
+    qtokens = [t for t in qnorm.split() if t]
+    s = 100.0 if qnorm and (qnorm in tnorm or tnorm in qnorm) else 0.0
+    for t in qtokens:
+        if t in tnorm:
+            s += 10.0
+        if anorm and t in anorm:
+            s += 3.0
+    return s
 
 
 @mcp.tool()
@@ -706,16 +730,30 @@ def bl_download_series(query: str, author: str = "", save_dir: str = "") -> str:
     if not results:
         return f"❌ No books found on Searchfloor for '{query}'"
 
-    # Group into series cycles; prefer groups matching the query
+    # Group into series cycles; strictly match the query against series/part titles
     groups = group_by_series(results)
-    query_lower = query.lower()
-    groups = [g for g in groups if query_lower in _normalize(g["series"])] or groups
-
     if not groups:
         return f"❌ No numbered series found matching '{query}'."
 
-    messages = [f"📚 Series: {groups[0]['series']} — {groups[0]['author']}"]
-    for part in groups[0]["parts"]:
+    query_norm = _normalize(query)
+    tokens = [t for t in re.split(r"\s+", query.lower()) if t]
+
+    def matches(g):
+        hay = _normalize(g["series"]) + " " + " ".join(
+            _normalize(p["result"].title) for p in g["parts"])
+        return query_norm in hay or (
+            tokens and all(t in hay for t in tokens))
+
+    candidates = [g for g in groups if matches(g)]
+    if not candidates:
+        titles = "\n".join(
+            f"  • {g['series']} — {g['author']} ({len(g['parts'])} частин)"
+            for g in groups[:10])
+        return f"❌ Серію '{query}' не знайдено на Searchfloor. Знайдені серії:\n{titles}"
+
+    group = candidates[0]
+    messages = [f"📚 Series: {group['series']} — {group['author']}"]
+    for part in group["parts"]:
         messages.append(_download_result(part["result"], save_dir))
 
     return "\n".join(messages)
@@ -736,7 +774,7 @@ def bl_review_series(series: str, text: str, rating: float) -> str:
         rating: Rating from 1 to 5
     """
     from .db import add_series_review
-    review = add_series_review(series, text, rating)
+    add_series_review(series, text, rating)
     return f"✅ Series review saved for '{series}' ({rating}/5)"
 
 
@@ -768,7 +806,7 @@ def bl_save_recommendation(title: str, author: str = "", reason: str = "", sourc
         source: Where the recommendation came from (e.g. "based on Дисгардиум review")
     """
     from .db import save_recommendation
-    rec = save_recommendation(title, author, reason, source)
+    save_recommendation(title, author, reason, source)
     return f"✅ Saved recommendation: '{title}' by {author or '?'} — {reason}"
 
 
