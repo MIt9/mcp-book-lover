@@ -1,6 +1,6 @@
 [project]
 name = "mcp-book-lover"
-version = "0.1.5"
+version = "0.1.6"
 description = "MCP server for personal book library — track reading, reviews, recommendations, multi-source search and format conversion"
 readme = "README.md"
 license = { text = "MIT" }

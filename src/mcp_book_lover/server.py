@@ -44,7 +44,8 @@ SEARCH & DOWNLOAD:
 FORMAT CONVERSION:
 - bl_convert_book preserves: chapters, bold/italic, inline images, cover, metadata
 - bl_convert_batch converts a whole directory (e.g. a downloaded cycle) at once
-- Supported paths: epub↔fb2, fb2/epub/txt/pdf → pdf, any → txt; zipped books (.fb2.zip/.epub.zip) are auto-extracted
+- Supported input formats: epub, fb2, txt, pdf, docx (native), doc and rtf (via system textutil/antiword/libreoffice)
+- Supported output formats: epub, fb2, pdf, txt; zipped books (.fb2.zip/.epub.zip) are auto-extracted
 - PDF output requires a system Unicode font (Arial on macOS, DejaVu on Linux) for Cyrillic
 
 STATS & GOALS:
@@ -336,7 +337,7 @@ def bl_convert_book(input_path: str, output_format: str) -> str:
     """Convert a book file to another format.
     
     Args:
-        input_path: Path to the source book file
+        input_path: Path to the source book file (epub, fb2, txt, pdf, docx, doc, rtf)
         output_format: Target format — epub, fb2, txt, or pdf
     """
     supported = {"epub", "fb2", "txt", "pdf"}
@@ -351,13 +352,13 @@ def bl_convert_book(input_path: str, output_format: str) -> str:
 
 
 @mcp.tool()
-def bl_convert_batch(src_path: str, output_format: str, extensions: str = "epub,fb2,txt,pdf", recursive: bool = True) -> str:
+def bl_convert_batch(src_path: str, output_format: str, extensions: str = "epub,fb2,txt,pdf,doc,docx,rtf", recursive: bool = True) -> str:
     """Convert all book files in a directory to one target format. Useful for book cycles/series.
     
     Args:
         src_path: Directory containing book files
         output_format: Target format — epub, fb2, txt, or pdf
-        extensions: Comma-separated source extensions to convert (default: epub,fb2,txt,pdf)
+        extensions: Comma-separated source extensions to convert (default: epub,fb2,txt,pdf,doc,docx,rtf)
         recursive: Whether to scan subdirectories (default: True)
     """
     try:

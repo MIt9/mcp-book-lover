@@ -1,4 +1,4 @@
-"""Book format conversion: epub, fb2, txt, pdf."""
+"""Book format conversion: epub, fb2, txt, pdf out; epub/fb2/txt/pdf/docx/doc/rtf in."""
 
 import base64
 import posixpath
@@ -79,7 +79,7 @@ def _extract_zip(src: Path) -> Path:
 
     with zipfile.ZipFile(src) as zf:
         candidates = [n for n in zf.namelist() if not n.endswith("/")]
-        book_files = [n for n in candidates if n.lower().endswith((".fb2", ".epub", ".txt", ".pdf"))]
+        book_files = [n for n in candidates if n.lower().endswith((".fb2", ".epub", ".txt", ".pdf", ".docx"))]
         if not book_files:
             raise ValueError(f"Cannot read format: zip (no book file inside: {src.name})")
         if len(book_files) > 1:
@@ -128,7 +128,8 @@ def convert_book_file(input_path: str, output_format: str) -> str:
 
 
 def convert_batch_dir(
-    src_path: str, output_format: str, extensions: str = "epub,fb2,txt,pdf", recursive: bool = True
+    src_path: str, output_format: str,
+    extensions: str = "epub,fb2,txt,pdf,doc,docx,rtf", recursive: bool = True
 ) -> tuple[list[str], list[str]]:
     """Convert all books in a directory to the target format.
 
@@ -178,6 +179,12 @@ def _parse_book(src: Path, fmt: str) -> _RichBook:
         return _parse_txt(src)
     if fmt == "pdf":
         return _parse_pdf(src)
+    if fmt == "docx":
+        return _parse_docx(src)
+    if fmt == "doc":
+        return _parse_doc(src)
+    if fmt == "rtf":
+        return _parse_rtf(src)
     raise ValueError(f"Cannot read format: {fmt}")
 
 
@@ -445,10 +452,150 @@ def _parse_pdf(src: Path) -> _RichBook:
 
     reader = PdfReader(str(src))
     text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    return _book_from_plain_text(src, text)
+
+
+def _book_from_plain_text(src: Path, text: str) -> _RichBook:
+    """Build a single-chapter book from plain text (shared by txt/pdf/doc/rtf)."""
     paras = [p.strip() for p in text.split("\n") if p.strip()]
     title = paras[0] if paras else src.stem
     blocks = [_Block.para([_Span(p)]) for p in paras]
     return _RichBook(title=title, chapters=[_Chapter(title="", blocks=blocks)])
+
+
+# --- Word processor formats (.docx native, .doc/.rtf via system tools) ---
+
+_DOCX_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+_DC_NS = "{http://purl.org/dc/elements/1.1/}"
+
+
+def _parse_docx(src: Path) -> _RichBook:
+    """Parse .docx natively: paragraphs, bold/italic runs, headings, metadata.
+
+    No external dependencies — reads word/document.xml straight from the OOXML zip.
+    """
+    import zipfile
+    from xml.etree import ElementTree as ET
+
+    W = _DOCX_W
+    book = _RichBook(title=src.stem)
+
+    def run_is(rpr, tag: str) -> bool:
+        el = rpr.find(f"{W}{tag}") if rpr is not None else None
+        if el is None:
+            return False
+        return (el.get(f"{W}val", "") or "").lower() not in ("0", "false", "none")
+
+    with zipfile.ZipFile(src) as zf:
+        try:
+            core = ET.fromstring(zf.read("docProps/core.xml"))
+            t_el = core.find(f"{_DC_NS}title")
+            a_el = core.find(f"{_DC_NS}creator")
+            if t_el is not None and (t_el.text or "").strip():
+                book.title = t_el.text.strip()
+            if a_el is not None and (a_el.text or "").strip():
+                book.author = a_el.text.strip()
+        except (KeyError, ET.ParseError):
+            pass
+        doc = ET.fromstring(zf.read("word/document.xml"))
+
+    body = doc.find(f"{W}body")
+    if body is None:
+        return book
+
+    blocks: list[_Block] = []
+    first_subtitle = ""
+    first_para = ""
+    for p in body.iter(f"{W}p"):
+        spans: list[_Span] = []
+        for r in p.iter(f"{W}r"):
+            rpr = r.find(f"{W}rPr")
+            bold = run_is(rpr, "b")
+            italic = run_is(rpr, "i")
+            txt = "".join(t.text or "" for t in r.iter(f"{W}t"))
+            if txt:
+                spans.append(_Span(txt, bold=bold, italic=italic))
+        para_text = "".join(s.text for s in spans).strip()
+        if not para_text:
+            continue
+
+        style_el = p.find(f"{W}pPr/{W}pStyle")
+        style = (style_el.get(f"{W}val", "") if style_el is not None else "").lower()
+        compact = style.replace(" ", "")
+        is_heading = (
+            "heading" in style
+            or "заголовок" in style
+            or compact in ("title", "subtitle")
+        )
+        if is_heading:
+            blocks.append(_Block.subtitle(para_text))
+            if not first_subtitle:
+                first_subtitle = para_text
+        else:
+            blocks.append(_Block.para(spans))
+            if not first_para:
+                first_para = para_text
+
+    book.chapters = [_Chapter(title="", blocks=blocks)]
+    if book.title == src.stem:
+        book.title = first_subtitle or first_para or src.stem
+    return book
+
+
+def _convert_to_txt_externally(src: Path) -> str | None:
+    """Convert legacy word formats to plain text via system tools.
+
+    Tries, in order: textutil (macOS builtin), antiword (.doc),
+    libreoffice (headless).
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    if shutil.which("textutil"):  # macOS
+        r = subprocess.run(
+            ["textutil", "-convert", "txt", "-stdout", str(src)],
+            capture_output=True, timeout=120,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.decode("utf-8", errors="replace")
+
+    if src.suffix.lower() == ".doc" and shutil.which("antiword"):
+        r = subprocess.run(["antiword", str(src)], capture_output=True, timeout=120)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.decode("utf-8", errors="replace")
+
+    if shutil.which("soffice") or shutil.which("libreoffice"):
+        lo = shutil.which("soffice") or shutil.which("libreoffice")
+        with tempfile.TemporaryDirectory(prefix="mcp_book_lo_") as td:
+            r = subprocess.run(
+                [lo, "--headless", "--convert-to", "txt:Text", "--outdir", td, str(src)],
+                capture_output=True, timeout=300,
+            )
+            out = Path(td) / f"{src.stem}.txt"
+            if out.exists():
+                text = out.read_text(encoding="utf-8", errors="replace")
+                if text.strip():
+                    return text
+    return None
+
+
+def _parse_doc(src: Path) -> _RichBook:
+    text = _convert_to_txt_externally(src)
+    if text is None:
+        raise ValueError(
+            ".doc conversion requires one of: textutil (macOS), antiword, libreoffice"
+        )
+    return _book_from_plain_text(src, text)
+
+
+def _parse_rtf(src: Path) -> _RichBook:
+    text = _convert_to_txt_externally(src)
+    if text is None:
+        raise ValueError(
+            ".rtf conversion requires one of: textutil (macOS), libreoffice"
+        )
+    return _book_from_plain_text(src, text)
 
 
 # ---------------------------------------------------------------------------
