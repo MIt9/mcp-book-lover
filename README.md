@@ -1,6 +1,29 @@
 # MCP Book Lover
 
+> **Your AI librarian from Claude or Cursor** — track reading lists, get recommendations, search 8 sources, download and convert books with 35+ tools.
+
 An MCP server for managing your personal book library. Track what you read, write reviews, get recommendations, search across multiple sources, and convert between formats — all from your AI assistant.
+
+## Quick Start
+
+```bash
+# No API key needed — just run
+claude mcp add book-lover -- uvx mcp-book-lover
+# Ask Claude: "Find books by Brandon Sanderson" or "What should I read next?"
+```
+
+**Claude Desktop** (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "book-lover": {
+      "command": "uvx",
+      "args": ["mcp-book-lover"]
+    }
+  }
+}
+```
 
 ## Features
 
